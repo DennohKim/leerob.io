@@ -1,28 +1,27 @@
 import type { Metadata } from 'next';
+import { Suspense, cache } from 'react';
 import { notFound } from 'next/navigation';
-import { Mdx } from 'app/components/mdx';
-import { allBlogs } from 'contentlayer/generated';
-import { getTweets } from 'lib/twitter';
-import Balancer from 'react-wrap-balancer';
+import { CustomMDX } from 'app/components/mdx';
+import { getViewsCount } from 'app/db/queries';
+import { getBlogPosts } from 'app/db/blog';
 import ViewCounter from '../view-counter';
-import { getViewsCount } from 'lib/metrics';
+import { increment } from 'app/db/actions';
 
 export async function generateMetadata({
   params,
 }): Promise<Metadata | undefined> {
-  const post = allBlogs.find((post) => post.slug === params.slug);
+  let post = getBlogPosts().find((post) => post.slug === params.slug);
   if (!post) {
     return;
   }
 
-  const {
+  let {
     title,
     publishedAt: publishedTime,
     summary: description,
     image,
-    slug,
-  } = post;
-  const ogImage = image
+  } = post.metadata;
+  let ogImage = image
     ? `https://leerob.io${image}`
     : `https://leerob.io/og?title=${title}`;
 
@@ -34,7 +33,7 @@ export async function generateMetadata({
       description,
       type: 'article',
       publishedTime,
-      url: `https://leerob.io/blog/${slug}`,
+      url: `https://leerob.io/blog/${post.slug}`,
       images: [
         {
           url: ogImage,
@@ -51,12 +50,15 @@ export async function generateMetadata({
 }
 
 function formatDate(date: string) {
-  const currentDate = new Date();
-  const targetDate = new Date(date);
+  let currentDate = new Date();
+  if (!date.includes('T')) {
+    date = `${date}T00:00:00`;
+  }
+  let targetDate = new Date(date);
 
-  const yearsAgo = currentDate.getFullYear() - targetDate.getFullYear();
-  const monthsAgo = currentDate.getMonth() - targetDate.getMonth();
-  const daysAgo = currentDate.getDate() - targetDate.getDate();
+  let yearsAgo = currentDate.getFullYear() - targetDate.getFullYear();
+  let monthsAgo = currentDate.getMonth() - targetDate.getMonth();
+  let daysAgo = currentDate.getDate() - targetDate.getDate();
 
   let formattedDate = '';
 
@@ -70,7 +72,7 @@ function formatDate(date: string) {
     formattedDate = 'Today';
   }
 
-  const fullDate = targetDate.toLocaleString('en-us', {
+  let fullDate = targetDate.toLocaleString('en-us', {
     month: 'long',
     day: 'numeric',
     year: 'numeric',
@@ -79,33 +81,59 @@ function formatDate(date: string) {
   return `${fullDate} (${formattedDate})`;
 }
 
-export default async function Blog({ params }) {
-  const post = allBlogs.find((post) => post.slug === params.slug);
+export default function Blog({ params }) {
+  let post = getBlogPosts().find((post) => post.slug === params.slug);
 
   if (!post) {
     notFound();
   }
 
-  const [allViews, tweets] = await Promise.all([
-    getViewsCount(),
-    getTweets(post.tweetIds),
-  ]);
-
   return (
     <section>
-      <script type="application/ld+json" suppressHydrationWarning>
-        {JSON.stringify(post.structuredData)}
-      </script>
-      <h1 className="font-bold text-2xl tracking-tighter max-w-[650px]">
-        <Balancer>{post.title}</Balancer>
+      <script
+        type="application/ld+json"
+        suppressHydrationWarning
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            '@context': 'https://schema.org',
+            '@type': 'BlogPosting',
+            headline: post.metadata.title,
+            datePublished: post.metadata.publishedAt,
+            dateModified: post.metadata.publishedAt,
+            description: post.metadata.summary,
+            image: post.metadata.image
+              ? `https://leerob.io${post.metadata.image}`
+              : `https://leerob.io/og?title=${post.metadata.title}`,
+            url: `https://leerob.io/blog/${post.slug}`,
+            author: {
+              '@type': 'Person',
+              name: 'Lee Robinson',
+            },
+          }),
+        }}
+      />
+      <h1 className="title font-medium text-2xl tracking-tighter max-w-[650px]">
+        {post.metadata.title}
       </h1>
       <div className="flex justify-between items-center mt-2 mb-8 text-sm max-w-[650px]">
         <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          {formatDate(post.publishedAt)}
+          {formatDate(post.metadata.publishedAt)}
         </p>
-        <ViewCounter allViews={allViews} slug={post.slug} trackView />
+        <Suspense fallback={<p className="h-5" />}>
+          <Views slug={post.slug} />
+        </Suspense>
       </div>
-      <Mdx code={post.body.code} tweets={tweets} />
+      <article className="prose prose-quoteless prose-neutral dark:prose-invert">
+        <CustomMDX source={post.content} />
+      </article>
     </section>
   );
+}
+
+let incrementViews = cache(increment);
+
+async function Views({ slug }: { slug: string }) {
+  let views = await getViewsCount();
+  incrementViews(slug);
+  return <ViewCounter allViews={views} slug={slug} />;
 }
